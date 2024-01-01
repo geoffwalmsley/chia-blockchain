@@ -31,6 +31,7 @@
     "genesis_by_coin_id": "493afb89eed93ab86741b2aa61b8f5de495d33ff9b781dfc8919e602b2afa150",
     "genesis_by_coin_id_or_singleton": "40170305e3a71c3e7523f37fbcfc3188f9f949da0818a6331f28251e76e8c56f",
     "genesis_by_puzzle_hash": "de5a6e06d41518be97ff6365694f4f89475dda773dede267caa33da63b434e36",
+    "gopher_tail": "df341b31844d8ad09baceb39c33810596796b2783cb5a70875a99805650b8326",
     "graftroot_dl_offers": "0893e36a88c064fddfa6f8abdb42c044584a98cb4273b80cccc83b4867b701a1",
     "nft_intermediate_launcher": "7a32d2d9571d3436791c0ad3d7fcfdb9c43ace2b0f0ff13f98d29f0cc093f445",
     "nft_metadata_updater_default": "fe8a4b4e27a2e29a4d3fc7ce9d527adbcaccbab6ada3903ccf3ba9a769d2d78b",

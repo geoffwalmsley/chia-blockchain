@@ -541,6 +541,13 @@ def get_offers_cmd(
     "-m", "--fee", help="The fee to use when pushing the completed offer, in XCH", default="0", show_default=True
 )
 @click.option(
+    "-g",
+    "--gophers",
+    help="Mint gophers for this trade (only if you're spending xch)",
+    is_flag=True,
+    default=False,
+)
+@click.option(
     "--reuse",
     help="Reuse existing address for the offer.",
     is_flag=True,
@@ -552,11 +559,14 @@ def take_offer_cmd(
     fingerprint: int,
     examine_only: bool,
     fee: str,
+    gophers: bool,
     reuse: bool,
 ) -> None:
     from .wallet_funcs import take_offer
 
-    asyncio.run(take_offer(wallet_rpc_port, fingerprint, Decimal(fee), path_or_hex, examine_only))  # reuse is not used
+    asyncio.run(
+        take_offer(wallet_rpc_port, fingerprint, Decimal(fee), path_or_hex, examine_only, gophers)
+    )  # reuse is not used
 
 
 @wallet_cmd.command("cancel_offer", help="Cancel an existing offer")

@@ -1923,7 +1923,7 @@ class WalletRpcApi:
         extra_conditions: Tuple[Condition, ...] = tuple(),
     ) -> EndpointResult:
         offer_hex: str = request["offer"]
-
+        mint_gophers: bool = request.get("mint_gophers", False)
         ###
         # This is temporary code, delete it when we no longer care about incorrectly parsing old offers
         # There's also temp code in test_wallet_rpc.py
@@ -1961,6 +1961,7 @@ class WalletRpcApi:
                 fee=fee,
                 solver=solver,
                 extra_conditions=extra_conditions,
+                mint_gophers=mint_gophers,
             )
         return {"trade_record": trade_record.to_json_dict_convenience()}
 

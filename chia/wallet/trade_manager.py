@@ -17,7 +17,22 @@ from chia.types.spend_bundle import SpendBundle, estimate_fees
 from chia.util.db_wrapper import DBWrapper2
 from chia.util.hash import std_hash
 from chia.util.ints import uint32, uint64
-from chia.wallet.conditions import Condition, ConditionValidTimes, parse_conditions_non_consensus, parse_timelock_info
+from chia.wallet.cat_wallet.cat_utils import CAT_MOD, SpendableCAT, unsigned_spend_bundle_for_spendable_cats
+from chia.wallet.cat_wallet.gopher_utils import (
+    GOPHER_TAIL_PUZZLE,
+    GOPHER_TAIL_PUZZLE_HASH,
+    get_gopher_mint_amount,
+    get_gopher_puzzle_hash,
+    get_gopher_puzzle_info,
+    get_gopher_tail_solution,
+)
+from chia.wallet.conditions import (
+    Condition,
+    ConditionValidTimes,
+    UnknownCondition,
+    parse_conditions_non_consensus,
+    parse_timelock_info,
+)
 from chia.wallet.db_wallet.db_wallet_puzzles import ACS_MU_PH
 from chia.wallet.nft_wallet.nft_wallet import NFTWallet
 from chia.wallet.outer_puzzles import AssetType
@@ -425,6 +440,7 @@ class TradeManager:
         fee: uint64 = uint64(0),
         extra_conditions: Tuple[Condition, ...] = tuple(),
         taking: bool = False,
+        mint_gophers: bool = False,
     ) -> Union[Tuple[Literal[True], Offer, None], Tuple[Literal[False], None, str]]:
         """
         Offer is dictionary of wallet ids and amount
@@ -484,6 +500,9 @@ class TradeManager:
                     # For the XCH wallet also include the fee amount to the coins we use to pay this offer
                     amount_to_select = abs(amount)
                     if wallet.type() == WalletType.STANDARD_WALLET:
+                        if mint_gophers:
+                            gopher_amount = get_gopher_mint_amount(uint64(abs(amount)))
+                            amount_to_select += gopher_amount
                         amount_to_select += fee
                     coins_to_offer[id] = await wallet.get_coins_to_offer(
                         asset_id, uint64(amount_to_select), tx_config.coin_selection_config
@@ -544,15 +563,33 @@ class TradeManager:
                     wallet = await self.wallet_state_manager.get_wallet_for_asset_id(id.hex())
                 # This should probably not switch on whether or not we're spending XCH but it has to for now
                 if wallet.type() == WalletType.STANDARD_WALLET:
-                    [tx] = await wallet.generate_signed_transaction(
-                        abs(offer_dict[id]),
-                        Offer.ph(),
-                        tx_config,
-                        fee=fee_left_to_pay,
-                        coins=set(selected_coins),
-                        puzzle_announcements_to_consume=announcements_to_assert,
-                        extra_conditions=extra_conditions,
-                    )
+                    if mint_gophers:
+                        inner_puzzle_hash = selected_coins.copy().pop().puzzle_hash
+                        gopher_puzzle_hash = get_gopher_puzzle_hash(inner_puzzle_hash)
+                        [tx] = await wallet.generate_signed_transaction(
+                            abs(offer_dict[id]),
+                            Offer.ph(),
+                            tx_config,
+                            fee=fee_left_to_pay,
+                            coins=set(selected_coins),
+                            primaries=[
+                                Payment(gopher_puzzle_hash, gopher_amount, [b"gopher"]),
+                                Payment(Offer.ph(), uint64(abs(amount))),
+                            ],
+                            puzzle_announcements_to_consume=announcements_to_assert,
+                            extra_conditions=extra_conditions,
+                        )
+                    else:
+                        [tx] = await wallet.generate_signed_transaction(
+                            abs(offer_dict[id]),
+                            Offer.ph(),
+                            tx_config,
+                            fee=fee_left_to_pay,
+                            coins=set(selected_coins),
+                            puzzle_announcements_to_consume=announcements_to_assert,
+                            extra_conditions=extra_conditions,
+                        )
+
                     all_transactions.append(tx)
                 elif wallet.type() == WalletType.NFT:
                     # This is to generate the tx for specific nft assets, i.e. not using
@@ -619,9 +656,11 @@ class TradeManager:
 
         return len(coin_states) == len(non_ephemeral_removals) and all([cs.spent_height is None for cs in coin_states])
 
-    async def calculate_tx_records_for_offer(self, offer: Offer, validate: bool) -> List[TransactionRecord]:
+    async def calculate_tx_records_for_offer(
+        self, offer: Offer, validate: bool, arbitrage_ph: Optional[bytes32] = None
+    ) -> List[TransactionRecord]:
         if validate:
-            final_spend_bundle: SpendBundle = offer.to_valid_spend()
+            final_spend_bundle: SpendBundle = offer.to_valid_spend(arbitrage_ph)
             hint_dict: Dict[bytes32, bytes32] = {}
             additions_dict: Dict[bytes32, Coin] = {}
             for hinted_coins, _ in (
@@ -754,6 +793,7 @@ class TradeManager:
         solver: Optional[Solver] = None,
         fee: uint64 = uint64(0),
         extra_conditions: Tuple[Condition, ...] = tuple(),
+        mint_gophers: bool = False,
     ) -> Tuple[TradeRecord, List[TransactionRecord]]:
         if solver is None:
             solver = Solver({})
@@ -787,6 +827,7 @@ class TradeManager:
             fee=fee,
             extra_conditions=extra_conditions,
             taking=True,
+            mint_gophers=mint_gophers,
         )
         if not result[0] or result[1] is None:
             raise ValueError(result[2])
@@ -798,12 +839,79 @@ class TradeManager:
         )
         self.log.info("COMPLETE OFFER: %s", complete_offer.to_bech32())
         assert complete_offer.is_valid()
+
+        inner_puzzle_hash = None
+        if mint_gophers:
+            xch_spent = arbitrage[None]
+            assert xch_spent < 0
+            mint_amount = get_gopher_mint_amount(uint64(abs(xch_spent)))
+
+            # get the inner puzzle hash of the xch parent coin from the offer
+            xch_wallet: Wallet = self.wallet_state_manager.main_wallet
+            for coin in complete_offer.get_primary_coins():
+                try:
+                    puzzle = await xch_wallet.puzzle_for_puzzle_hash(coin.puzzle_hash)
+                    inner_puzzle_hash = puzzle.get_tree_hash()
+                    break
+                except Exception as e:
+                    if "No key for puzzle hash" in e.args[0]:
+                        pass
+                    else:
+                        raise e
+
+            assert inner_puzzle_hash
+
+            # convert the offer's requested payments into the right Program form for the gopher tail
+            tail_sol = get_gopher_tail_solution(complete_offer.requested_payments)
+
+            # create the gopher eve_spend bundle
+            tail_condition = [
+                UnknownCondition(
+                    opcode=Program.to(51),
+                    args=[
+                        Program.to(None),
+                        Program.to(-113),
+                        GOPHER_TAIL_PUZZLE,
+                        tail_sol,
+                    ],
+                )
+            ]
+
+            cat_inner_solution = xch_wallet.make_solution(
+                [Payment(inner_puzzle_hash, mint_amount, [inner_puzzle_hash])],
+                conditions=(tail_condition),  # type: ignore
+            )
+            expected_eve_puzzlehash = get_gopher_puzzle_hash(inner_puzzle_hash)
+            eve_coin = list(filter(lambda a: a.puzzle_hash == expected_eve_puzzlehash, complete_offer.additions()))[0]
+            mint_spend = unsigned_spend_bundle_for_spendable_cats(
+                CAT_MOD,
+                [
+                    SpendableCAT(
+                        eve_coin,
+                        GOPHER_TAIL_PUZZLE_HASH,
+                        puzzle,
+                        cat_inner_solution,
+                        limitations_program_reveal=GOPHER_TAIL_PUZZLE,
+                    )
+                ],
+            )
+            signed_mint_spend = await self.wallet_state_manager.sign_transaction(mint_spend.coin_spends)
         final_spend_bundle: SpendBundle = complete_offer.to_valid_spend(
-            solver=Solver({**valid_spend_solver.info, **solver.info})
+            arbitrage_ph=inner_puzzle_hash, solver=Solver({**valid_spend_solver.info, **solver.info})
         )
+        if mint_gophers:
+            final_spend_bundle = SpendBundle.aggregate([final_spend_bundle, signed_mint_spend])
+            # create the wallet if it doesn't already exist
+            gopher_puzzle_info = get_gopher_puzzle_info()
+            exists: Optional[Wallet] = await self.wallet_state_manager.get_wallet_for_puzzle_info(gopher_puzzle_info)
+            if exists is None:
+                await self.wallet_state_manager.create_wallet_for_puzzle_info(gopher_puzzle_info)
+
         await self.maybe_create_wallets_for_offer(complete_offer)
 
-        tx_records: List[TransactionRecord] = await self.calculate_tx_records_for_offer(complete_offer, True)
+        tx_records: List[TransactionRecord] = await self.calculate_tx_records_for_offer(
+            complete_offer, True, inner_puzzle_hash
+        )
 
         trade_record: TradeRecord = TradeRecord(
             confirmed_at_index=uint32(0),

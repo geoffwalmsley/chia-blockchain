@@ -686,6 +686,7 @@ async def take_offer(
     d_fee: Decimal,
     file: str,
     examine_only: bool,
+    gophers: bool,
 ) -> None:
     async with get_wallet_client(wallet_rpc_port, fp) as (wallet_client, fingerprint, config):
         if os.path.exists(file):
@@ -705,6 +706,11 @@ async def take_offer(
             return
 
         offered, requested, _, _ = offer.summary()
+        if gophers:
+            if "xch" not in requested:
+                raise ValueError("Cannot mint gophers for this offer because it does not request XCH")
+            if requested["xch"] < 10:
+                raise ValueError("You can only mint gophers on offers requesting at least 10 mojo")
         cat_name_resolver = wallet_client.cat_asset_id_to_name
         network_xch = AddressType.XCH.hrp(config).upper()
         print("Summary:")
@@ -771,6 +777,7 @@ async def take_offer(
                 offer,
                 fee=fee,
                 tx_config=CMDTXConfigLoader().to_tx_config(units["chia"], config, fingerprint),
+                mint_gophers=gophers,
             )
             print(f"Accepted offer with ID {trade_record.trade_id}")
             print(f"Use chia wallet get_offers --id {trade_record.trade_id} -f {fingerprint} to view its status")

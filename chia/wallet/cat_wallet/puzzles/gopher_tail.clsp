@@ -1,0 +1,112 @@
+(mod (
+    OFFER_PUZZLE_HASH
+    Truths
+    parent_is_cat
+    lineage_proof
+    delta
+    inner_conditions
+    (asset_notarized_payments)
+  )
+
+  (include cat_truths.clib)
+  (include condition_codes.clib)
+  (include curry.clib)
+  (include utility_macros.clib)
+  (include sha256tree.clib)
+  (include *standard-cl-21*)
+
+  (defconstant MINT_RATIO 10)
+
+  (defun get_cat_puzzlehash (CAT_MOD_HASH cat_tail_hash inner_puzzle_hash)
+    (curry_hashes CAT_MOD_HASH (sha256 1 CAT_MOD_HASH) (sha256 1 cat_tail_hash) inner_puzzle_hash)
+  )
+
+  (defun-inline get_APA (puzzle_hash notarized_payment)
+    (list ASSERT_PUZZLE_ANNOUNCEMENT (sha256 puzzle_hash (sha256tree notarized_payment)))
+  )
+
+  (defun get_APAs (puzzle_hash notarized_payments conditions)
+    (if notarized_payments
+        (get_APAs puzzle_hash (r notarized_payments) (c (get_APA puzzle_hash (f notarized_payments)) conditions))
+        conditions
+    )
+  )
+
+  (defun get_amount_from_payments (notarized_payments amt)
+    (if notarized_payments
+        (get_amount_from_payments (r notarized_payments) (+ amt (f (r (f notarized_payments)))))
+        amt
+    )
+  )
+
+  (defun make_tail_conditions (OFFER_PUZZLE_HASH Truths asset_notarized_payments xch_amount conditions)
+    (if asset_notarized_payments
+        (let*
+          (
+            (asset_id (f (f asset_notarized_payments)))
+            (notarized_payments (r (f asset_notarized_payments)))
+            (offer_ph
+              (if asset_id
+                  (get_cat_puzzlehash (cat_mod_hash_truth Truths) asset_id OFFER_PUZZLE_HASH)
+                  OFFER_PUZZLE_HASH
+              )
+            )
+          )
+          (make_tail_conditions
+            OFFER_PUZZLE_HASH
+            Truths
+            (r asset_notarized_payments)
+            (if asset_id
+                xch_amount
+                (+ xch_amount (get_amount_from_payments (r (f notarized_payments)) 0))
+            )
+            (get_APAs offer_ph notarized_payments conditions)
+          )
+        )
+        (c xch_amount
+          (c
+            (list ASSERT_CONCURRENT_SPEND (sha256 (my_parent_cat_truth Truths) OFFER_PUZZLE_HASH xch_amount ))
+            conditions
+          )
+        )
+    )
+  )
+
+  (defun-inline max_mint_amount (xch_spend_amount)
+    (let
+      (
+        (mintable (f (divmod xch_spend_amount MINT_RATIO)))
+      )
+      (if (= 0 mintable)
+          (x)
+          mintable
+      )
+    )
+  )
+
+  (defun approve_conditions (inner_conds max_mintable tot)
+    (if inner_conds
+        (approve_conditions
+          (r inner_conds)
+          max_mintable
+          (if (= (f (f inner_conds)) CREATE_COIN)
+              (+ tot (f (r (r (f inner_conds)))))
+              tot
+          )
+        )
+        (if (> tot max_mintable)
+            0
+            1
+        )
+    )
+  )
+
+  (let
+    (
+      (amt_and_conds (make_tail_conditions OFFER_PUZZLE_HASH Truths asset_notarized_payments 0 ()))
+    )
+    (assert (approve_conditions inner_conditions (max_mint_amount (f amt_and_conds)) 0)
+      (r amt_and_conds)
+    )
+  )
+)

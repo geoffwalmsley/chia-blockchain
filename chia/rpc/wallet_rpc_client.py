@@ -816,6 +816,7 @@ class WalletRpcClient(RpcClient):
         tx_config: TXConfig,
         solver: Dict[str, Any] = None,
         fee=uint64(0),
+        mint_gophers: bool = False,
         extra_conditions: Tuple[Condition, ...] = tuple(),
         timelock_info: ConditionValidTimes = ConditionValidTimes(),
     ) -> TradeRecord:
@@ -823,6 +824,7 @@ class WalletRpcClient(RpcClient):
             "offer": offer.to_bech32(),
             "fee": fee,
             "extra_conditions": conditions_to_json_dicts(extra_conditions),
+            "mint_gophers": mint_gophers,
             **tx_config.to_json_dict(),
             **timelock_info.to_json_dict(),
         }
